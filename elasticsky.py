@@ -169,7 +169,7 @@ def dist_fit_orbits(df, hdr, tracks):
     return fit_orbits(df, hdr, tracks)
 
 ##
-## Main
+## Functions for command-line testing; should be refactored to its own module
 ##
 
 def processAdesFile(fn, chunk_size=10, ntracklets=None):
@@ -205,7 +205,6 @@ def processAdesFile_single(fn, ntracklets=None):
 
     return results
 
-#####
 def cmdline_test():
     if False:
         orbits = processAdesFile_single("input.psv", ntracklets=5)
@@ -242,7 +241,7 @@ def cmdline_test():
 
 
 ##
-## Flask app
+## Flask app. Should be refactored to its own module.
 ##
 import datetime
 
