@@ -19,7 +19,7 @@ RUN mkdir ~/software && cd ~/software \
 	&& rm -r ~/software
 
 # elasticsky dependencies
-RUN conda install tabulate --yes \
+RUN conda install -c defaults -c conda-forge tabulate flask-restful --yes \
  	&& conda clean --all --yes
 
 # elasticsky data

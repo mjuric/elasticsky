@@ -115,8 +115,11 @@ def fit_orbits(obsvs, hdr, trkSubs=None):
             # fetch/construct the result
             if ret.returncode == 0:
                 # read the result
-                with open(f"{resultdir}/covar.json") as fp:
-                    result = json.load(fp)
+                try:
+                    with open(f"{resultdir}/covar.json") as fp:
+                        result = json.load(fp)
+                except:
+                    result = {}
             else:
                 result = {}
 
@@ -264,8 +267,9 @@ def cmdline_test():
     print(f"Shutting down...")
 
 
-####
-# Flask app
+##
+## Flask app
+##
 import datetime
 
 class BatchRunner:
@@ -277,21 +281,24 @@ class BatchRunner:
         self.total = len(self.df)
         self.result = []
 
-    def eta(self):
+    def stats(self):
         # compute ETA based on observed rate of processing
         # (the number of seconds remaining to completion)
 
         now = datetime.datetime.now()
         dt = now - self.tstart
-        
+
         if self.result:
-            return (self.total / len(self.result) - 1) * dt.seconds;
+            return dt.seconds, (self.total / len(self.result) - 1) * dt.seconds;
         else:
-            return "unknown"
+            return dt.seconds, "unknown"
 
     def start(self, chunk_size=10, ntracklets=None):
         self.tstart = datetime.datetime.now()
     
+        if ntracklets is None:
+            ntracklets = len(self.df['trkSub'].unique())
+
         # subdivide the data into smaller chunks, with N tracklets each. These
         # will be submitted to individual FindOrb threads to work on.
         tracks = chunk(self.df['trkSub'].unique()[:ntracklets], chunk_size)
@@ -326,12 +333,10 @@ import werkzeug
 app = Flask(__name__)
 api = Api(app)
 
-batches = {
-    'test': '42'
-}
+batches = {}
 
 import ray
-ray.init()
+ray.init(address='auto')
 
 class BatchResult(Resource):
     def get(self, id):
@@ -346,13 +351,14 @@ class BatchStatus(Resource):
 
         done = len(runner.result)
         running = runner.total - done
-        eta = runner.eta()
+        runtime, eta = runner.stats()
 
         return {
             'ncores': ray.cluster_resources()['CPU'],
             'trk_done': done,
             'trk_running': running,
             'started': str(runner.tstart),
+            'runtime_seconds': runtime,
             'eta_seconds': eta
         }
 
