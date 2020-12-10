@@ -76,9 +76,6 @@ def fit_orbits(obsvs, hdr, trkSubs=None):
     """
     import tempfile, subprocess, json, os
 
-    # make sure there's only a single tracklet
-    assert len(obsvs) >= 1
-
     if trkSubs is None:
         trkSubs = obsvs['trkSub'].unique()
 
