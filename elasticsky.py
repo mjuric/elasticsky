@@ -228,7 +228,8 @@ def processAdesFile_single(fn, ntracklets=None):
 
     return results
 
-if __name__ == "__main__":
+#####
+def cmdline_test():
     if False:
         orbits = processAdesFile_single("input.psv", ntracklets=5)
     else:
@@ -261,3 +262,133 @@ if __name__ == "__main__":
     print(f"Fitted state vectors are in result.txt")
 
     print(f"Shutting down...")
+
+
+####
+# Flask app
+import datetime
+
+class BatchRunner:
+    def __init__(self, fn):
+        df, hdr = read_psv_ades(fn)
+        del df["rmsMag"] # workaround for FindOrb bug
+
+        self.df, self.hdr = df, hdr
+        self.total = len(self.df)
+        self.result = []
+
+    def eta(self):
+        # compute ETA based on observed rate of processing
+        # (the number of seconds remaining to completion)
+
+        now = datetime.datetime.now()
+        dt = now - self.tstart
+        
+        if self.result:
+            return (self.total / len(self.result) - 1) * dt.seconds;
+        else:
+            return "unknown"
+
+    def start(self, chunk_size=10, ntracklets=None):
+        self.tstart = datetime.datetime.now()
+    
+        # subdivide the data into smaller chunks, with N tracklets each. These
+        # will be submitted to individual FindOrb threads to work on.
+        tracks = chunk(self.df['trkSub'].unique()[:ntracklets], chunk_size)
+
+        # launch the parallel processing
+        df_id = ray.put(self.df)
+        self.tasks = [
+            dist_fit_orbits.remote(df_id, self.hdr, track_batch) for track_batch in tracks
+        ]
+        self.result = []
+        self.total = min(len(self.df), ntracklets)
+
+    def collect(self, num_returns=None, timeout=0):
+        if num_returns == None:
+            num_returns = len(self.tasks)
+
+        # collect the results that have finished
+        done, tasks = ray.wait(self.tasks, num_returns=num_returns, timeout=timeout)
+        
+        chunked_results = ray.get(done)
+        results = [result for chunk in chunked_results for result in chunk]
+        
+        self.result += results
+        self.tasks = tasks
+
+        return len(results)
+
+from flask import Flask, request
+from flask_restful import Resource, Api, reqparse, abort
+import werkzeug
+
+app = Flask(__name__)
+api = Api(app)
+
+batches = {
+    'test': '42'
+}
+
+import ray
+ray.init()
+
+class BatchResult(Resource):
+    def get(self, id):
+        runner = batches[id]
+        runner.collect()
+        return runner.result
+
+class BatchStatus(Resource):
+    def get(self, id):
+        runner = batches[id]
+        runner.collect()
+
+        done = len(runner.result)
+        running = runner.total - done
+        eta = runner.eta()
+
+        return {
+            'ncores': ray.cluster_resources()['CPU'],
+            'trk_done': done,
+            'trk_running': running,
+            'started': str(runner.tstart),
+            'eta_seconds': eta
+        }
+
+class BatchRun(Resource):
+    def get(self):
+        return list(batches.keys())
+
+    def post(self):
+        parser = reqparse.RequestParser()
+        parser.add_argument('ades', type=werkzeug.datastructures.FileStorage, location='files')
+        parser.add_argument('ntracklets', type=int, help="Number of tracklets to process")
+        args = parser.parse_args()
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fn = f"{tmpdir}/input.psv"
+            args['ades'].save(fn)
+            ntracklets=args["ntracklets"]
+
+            # generate the ID, as hash of the file
+            import hashlib
+            content = open(fn).read() + f"\nntracklets={ntracklets}"
+            id = hashlib.md5(content.encode("utf-8")).hexdigest()
+
+            runner = BatchRunner(fn)
+            runner.start(ntracklets=ntracklets)
+
+            batches[id] = runner
+
+        return { 'id': id }, 201
+
+api.add_resource(BatchRun, '/fit')
+api.add_resource(BatchResult, '/fit/result/<id>')
+api.add_resource(BatchStatus, '/fit/status/<id>')
+
+if __name__ == "__main__":
+   # cmdline_test()
+   app.run(debug=True)
+   pass
