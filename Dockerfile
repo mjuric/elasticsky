@@ -23,7 +23,8 @@ RUN conda install -c defaults -c conda-forge tabulate flask-restful --yes \
  	&& conda clean --all --yes
 
 # elasticsky data
-COPY input.psv /data/
 COPY environ.dat /data/
+COPY tv/index.html /data/tv/
+COPY tv/trace_viewer_full.html /data/tv/
 
 WORKDIR /data

@@ -307,18 +307,24 @@ class FitRunner:
 
         return len(results)
 
-from flask import Flask, request
+from flask import Flask, request, redirect
 from flask_restful import Resource, Api, reqparse, abort
 import werkzeug
+import os
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=f'{os.getcwd()}/tv', static_url_path='/timeline')
 api = Api(app)
+
+# FIXME: this method of storing state won't work in production (in a
+# multiprocessing setting).  I'm not clear what happens with ray in such
+# case, as well.  It's probably best to shift all of this to ray.serve
+# https://docs.ray.io/en/master/serve/ to get things to work nicely.
 
 batches = {}
 
 import ray
-#ray.init(address='auto')
-ray.init()
+ray.init(address='auto')
+#ray.init()
 
 class FitRun(Resource):
     #
@@ -407,14 +413,13 @@ api.add_resource(FitResult, '/fit/result/<id>')
 api.add_resource(FitStatus, '/fit/status/<id>')
 api.add_resource(TimelineResource, '/timeline-json')
 
-@app.route('/timeline/trace_viewer_full.html')
-def tvs():
-    return app.send_static_file('tv/trace_viewer_full.html')
-
 @app.route('/timeline')
-def timeline():
-    return app.send_static_file('tv/trace_viewer_embedder.html')
+@app.route('/timeline/')
+def hello():
+    return redirect("/timeline/index.html", code=302)
 
 if __name__ == "__main__":
+    import os
+    print(f"CWD={os.getcwd()}")
    # cmdline_test()
-   app.run()
+    app.run(debug=True)
