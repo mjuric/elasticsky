@@ -1,7 +1,9 @@
 FROM rayproject/ray:latest-cpu
 MAINTAINER Mario Juric
 
-ENV PATH="${PATH}:~/bin"
+# Useful utilities
+RUN apt-get update \
+	&& apt-get install joe jq -y
 
 # Update applications and install OS-level dependencies
 RUN apt-get update \
@@ -13,6 +15,15 @@ RUN mkdir ~/software && cd ~/software \
 	&& cd find_orb \
 	&& /bin/bash DOWNLOAD.sh -d .. \
 	&& /bin/bash INSTALL.sh -d .. -u \
+	&& cp -a ~/bin/* /usr/local/bin \
 	&& rm -r ~/software
+
+# elasticsky dependencies
+RUN conda install tabulate --yes \
+ 	&& conda clean --all --yes
+
+# elasticsky data
+COPY input.psv /data/
+COPY environ.dat /data/
 
 WORKDIR /data

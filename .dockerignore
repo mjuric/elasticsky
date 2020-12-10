@@ -1,4 +1,5 @@
 *.psv
+!input.psv
 *~
 _result
 find_orb

@@ -48,16 +48,19 @@ def write_psv_ades(fn, df, header):
 ## Multiprocess-safe FindOrb Wrappers
 ##
 
-def fit_orbit(df, hdr):
-    """Fit orbit with FindOrb to a single track in a multi-processing safe manner
-    
+def fit_orbits(obsvs, hdr, trkSubs=None):
+    """Fit a batch of tracklets with FindOrb in a multi-processing safe manner.
+
+    These are all still processed within a single thread (process).
+
     Args:
         df (pd.DataFrame): The observations to fit
         hdr (str): ADES file header for the observations in `df`
+        tracks (list): A list of trkSubs to fit; if None, process all from `df`
         
     Returns:
-        dict: A dictionary with the result of the run, of the form::
-        
+        dict: A dictionary of (trkSub: result), where result is a list of
+              items of the form::
             {
                 'name': track name,
                 'state_vec': state vector
@@ -71,15 +74,17 @@ def fit_orbit(df, hdr):
                 }
             }
     """
-    # make sure there's only a single tracklet
-    assert len(df) >= 1
-    assert len(df["trkSub"].unique()) == 1
-    trkSub = df["trkSub"].iloc[0]
-
-    # create a temporary directory
     import tempfile, subprocess, json, os
+
+    # make sure there's only a single tracklet
+    assert len(obsvs) >= 1
+
+    if trkSubs is None:
+        trkSubs = obsvs['trkSub'].unique()
+
+    results = []
+    # create a temporary directory
     with tempfile.TemporaryDirectory() as tmpdir:
-        print(f"tmpdir: {tmpdir}")
 
         # prep the new "home" directory
         from shutil import copytree, ignore_patterns
@@ -89,34 +94,43 @@ def fit_orbit(df, hdr):
         )
         os.symlink(os.path.expanduser("~/.find_orb/linux_p1550p2650.430t"), f"{tmpdir}/.find_orb/linux_p1550p2650.430t")
 
-        # dump to ades
-        datafile = f"{tmpdir}/data.psv"
-        resultdir = f"{tmpdir}/result"
-        write_psv_ades(datafile, df, hdr)
+        # Fit tracklet by tracklet
+        for trkSub in trkSubs:
+            print(f"[{gethip()[1]}:{tmpdir}] {trkSub}")
 
-        # call findorb
-        cmd = f"fo {datafile} -O {resultdir} -D /Users/mjuric/projects/elasticsky/environ.dat"
-        env = os.environ.copy()
-        env["HOME"] = tmpdir
-        ret = subprocess.run(cmd, shell=True, env=env, check=False, capture_output=True)
+            # select only the current tracklet
+            df = obsvs[obsvs["trkSub"] == trkSub]
+        
+            # dump to ades
+            datafile = f"{tmpdir}/data.psv"
+            resultdir = f"{tmpdir}/result"
+            write_psv_ades(datafile, df, hdr)
 
-        # fetch/construct the result
-        if ret.returncode == 0:
-            # read the result
-            with open(f"{resultdir}/covar.json") as fp:
-                result = json.load(fp)
-        else:
-            result = {}
+            # call findorb
+            cmd = f"fo {datafile} -O {resultdir} -D environ.dat"
+            env = os.environ.copy()
+            env["HOME"] = tmpdir
+            ret = subprocess.run(cmd, shell=True, env=env, check=False, capture_output=True)
 
-        result["name"] = trkSub
-        result["findorb"] = {
-            'args': ret.args,
-            'returncode': ret.returncode,
-            'stdout': ret.stdout.decode('utf-8'),
-            'stderr': ret.stderr.decode('utf-8')
-        }
+            # fetch/construct the result
+            if ret.returncode == 0:
+                # read the result
+                with open(f"{resultdir}/covar.json") as fp:
+                    result = json.load(fp)
+            else:
+                result = {}
 
-        return result
+            result["name"] = trkSub
+            result["findorb"] = {
+                'args': ret.args,
+                'returncode': ret.returncode,
+                'stdout': ret.stdout.decode('utf-8'),
+                'stderr': ret.stderr.decode('utf-8')
+            }
+
+            results.append(result)
+
+    return results
 
 
 def fit_orbit_batch(df, hdr, tracks=None):
@@ -156,6 +170,17 @@ def to_fwf(fn, df):
         fp.write(content)
         fp.write("\n")
 
+# Function to display hostname and
+# IP address
+def gethip():
+    import socket
+    try:
+        host_name = socket.gethostname()
+        host_ip = socket.gethostbyname(host_name)
+        return (host_name, host_ip)
+    except:
+        return (None, None)
+
 ##
 ## Ray support
 ##
@@ -163,8 +188,8 @@ def to_fwf(fn, df):
 import ray
 
 @ray.remote
-def dist_fit_orbit_batch(df, hdr, tracks):
-    return fit_orbit_batch(df, hdr, tracks)
+def dist_fit_orbits(df, hdr, tracks):
+    return fit_orbits(df, hdr, tracks)
 
 ##
 ## Main
@@ -177,13 +202,13 @@ def processAdesFile(fn, chunk_size=10, ntracklets=None):
 
     # subdivide it into smaller chunks, with N tracklets each. These
     # chunks will be submitted to individual FindOrb threads to work on.
-    tracks = chunk(df['trkSub'].unique(), chunk_size)
+    tracks = chunk(df['trkSub'].unique()[:ntracklets], chunk_size)
 
     # launch the parallel processing, and wait for the result
     df_id = ray.put(df)
     futures = [
-        dist_fit_orbit_batch.remote(df_id, hdr, track_batch)
-        for track_batch in tracks[:ntracklets]
+        dist_fit_orbits.remote(df_id, hdr, track_batch)
+        for track_batch in tracks
     ]
     chunked_results = ray.get(futures)
     del df_id
@@ -193,11 +218,24 @@ def processAdesFile(fn, chunk_size=10, ntracklets=None):
 
     return results
 
-if __name__ == "__main__":
-    ray.init()
+def processAdesFile_single(fn, ntracklets=None):
+    # load the file
+    df, hdr = read_psv_ades(fn)
+    del df["rmsMag"] # workaround for FindOrb bug
 
-    # grab this file from https://epyc.astro.washington.edu/~moeyensj/rubin_submissions/ver5/
-    orbits = processAdesFile("2022-10-18T09:06:40.464Z_discoveries_01_LSST_TEST.psv", ntracklets=10)
+    tracks = df["trkSub"].unique()[:ntracklets]
+    results = fit_orbits(df, hdr, tracks)
+
+    return results
+
+if __name__ == "__main__":
+    if False:
+        orbits = processAdesFile_single("input.psv", ntracklets=5)
+    else:
+        ray.init(address='auto')
+
+        # grab this file from https://epyc.astro.washington.edu/~moeyensj/rubin_submissions/ver5/
+        orbits = processAdesFile("input.psv", ntracklets=10000)
 
     # basic info
     print(f"Number of results: {len(orbits)}")
@@ -205,16 +243,21 @@ if __name__ == "__main__":
     # check for failures
     failures = [ result for result in orbits if result['findorb']['returncode'] != 0]
     print(f"Number of failures: {len(failures)}")
-    failures
+    if len(failures):
+        import json
+        with open("failures.log", "w") as fp:
+            json.dump(failures, fp)
 
     # construct dataframe of states and write it out
-    states = [ result['state_vect'] for result in orbits ]
-    epochs = [ result["epoch"] - 2400000.5 for result in orbits]
-    keys = [ result['name'] for result in orbits ]
+    states = [ result['state_vect']        for result in orbits if result['findorb']['returncode'] == 0 ]
+    epochs = [ result["epoch"] - 2400000.5 for result in orbits if result['findorb']['returncode'] == 0 ]
+    keys   = [ result['name']              for result in orbits if result['findorb']['returncode'] == 0 ]
     states = pd.DataFrame(states, index=keys, columns=["x", "y", "z", "vx", "vy", "vz"])
-    states["epoch"] = epochs
     states.reset_index(inplace=True)
     states = states.rename(columns = {'index':'trkSub'})
+    states["epoch"] = epochs
     states.sort_index()
     to_fwf("result.txt", states)
-    print(f"Resuling states are in result.txt")
+    print(f"Fitted state vectors are in result.txt")
+
+    print(f"Shutting down...")
