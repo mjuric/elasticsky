@@ -135,29 +135,6 @@ def fit_orbits(obsvs, hdr, trkSubs=None):
 
     return results
 
-
-def fit_orbit_batch(df, hdr, tracks=None):
-    """Fit a batch of tracklets with FindOrb in a multi-processing safe manner
-
-    These are all still processed within a single thread (process).
-
-    Args:
-        df (pd.DataFrame): The observations to fit
-        hdr (str): ADES file header for the observations in `df`
-        tracks (list): A list of trkSubs to fit; if None, process all from `df`
-        
-    Returns:
-        dict: A dictionary of (trkSub: result), where result is the output of `fit_orbit`
-    """
-    if tracks is None:
-        tracks = df['trkSub'].unique()
-
-    results = []
-    for trkSub in tracks:
-        trk = df[df["trkSub"] == trkSub]
-        results.append(fit_orbit(trk, hdr))
-    return results
-
 ##
 ## Utilities
 ##
