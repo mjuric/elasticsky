@@ -245,7 +245,7 @@ def cmdline_test():
 ##
 import datetime
 
-class BatchRunner:
+class FitRunner:
     def __init__(self, fn):
         df, hdr = read_psv_ades(fn)
         del df["rmsMag"] # workaround for FindOrb bug
@@ -253,12 +253,20 @@ class BatchRunner:
         self.df, self.hdr = df, hdr
         self.total = len(self.df)
         self.result = []
+        
+        self.tend = None
 
     def stats(self):
-        # compute ETA based on observed rate of processing
-        # (the number of seconds remaining to completion)
+        # return the time this batch took to execute, and
+        # the ETA if it's still running
 
-        now = datetime.datetime.now()
+        if self.tend is None:
+            now = datetime.datetime.now()
+            if len(self.tasks) == 0:
+                self.tend = now
+        else:
+            now = self.tend
+
         dt = now - self.tstart
 
         if self.result:
@@ -309,15 +317,58 @@ api = Api(app)
 batches = {}
 
 import ray
-ray.init(address='auto')
+#ray.init(address='auto')
+ray.init()
 
-class BatchResult(Resource):
-    def get(self, id):
-        runner = batches[id]
-        runner.collect()
-        return runner.result
+class FitRun(Resource):
+    #
+    # The resource representing a the orbit fitter service.
+    #
+    def get(self):
+        #
+        # Return a list of fits we know of, either in progress or done.
+        #
+        return batches.keys()
 
-class BatchStatus(Resource):
+    def post(self):
+        #
+        # Initiate a new fit. If the file and request correspond to something we've already run,
+        # do not initiate a new run.
+        #
+        parser = reqparse.RequestParser()
+        parser.add_argument('ades', type=werkzeug.datastructures.FileStorage, location='files', help='PSV-serialized ADES file')
+        parser.add_argument('ntracklets', type=int, help="Number of tracklets to process")
+        args = parser.parse_args()
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fn = f"{tmpdir}/input.psv"
+            args['ades'].save(fn)
+            ntracklets=args["ntracklets"]
+
+            # generate the ID, as hash of the file
+            import hashlib
+            content = open(fn).read() + f"\nntracklets={ntracklets}"
+            id = hashlib.md5(content.encode("utf-8")).hexdigest()
+
+            # start a new fit, if it's not already in batches
+            if id not in batches:
+                runner = FitRunner(fn)
+                runner.start(ntracklets=ntracklets)
+
+                batches[id] = runner
+
+                return { 'id': id }, 201
+            else:
+                return { 'id': id }, 200
+
+        # We're not supposed to get here
+        assert(False)
+
+class FitStatus(Resource):
+    #
+    # The resource representing the status of a fit
+    #
     def get(self, id):
         runner = batches[id]
         runner.collect()
@@ -335,39 +386,35 @@ class BatchStatus(Resource):
             'eta_seconds': eta
         }
 
-class BatchRun(Resource):
+class FitResult(Resource):
+    #
+    # The resource representing the result of a fit. It
+    # could be a partial result.
+    #
+    def get(self, id):
+        runner = batches[id]
+        runner.collect()
+        return runner.result
+
+
+class TimelineResource(Resource):
     def get(self):
-        return list(batches.keys())
+        traceJson = ray.timeline()
+        return traceJson
 
-    def post(self):
-        parser = reqparse.RequestParser()
-        parser.add_argument('ades', type=werkzeug.datastructures.FileStorage, location='files')
-        parser.add_argument('ntracklets', type=int, help="Number of tracklets to process")
-        args = parser.parse_args()
+api.add_resource(FitRun, '/fit')
+api.add_resource(FitResult, '/fit/result/<id>')
+api.add_resource(FitStatus, '/fit/status/<id>')
+api.add_resource(TimelineResource, '/timeline-json')
 
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            fn = f"{tmpdir}/input.psv"
-            args['ades'].save(fn)
-            ntracklets=args["ntracklets"]
+@app.route('/timeline/trace_viewer_full.html')
+def tvs():
+    return app.send_static_file('tv/trace_viewer_full.html')
 
-            # generate the ID, as hash of the file
-            import hashlib
-            content = open(fn).read() + f"\nntracklets={ntracklets}"
-            id = hashlib.md5(content.encode("utf-8")).hexdigest()
-
-            runner = BatchRunner(fn)
-            runner.start(ntracklets=ntracklets)
-
-            batches[id] = runner
-
-        return { 'id': id }, 201
-
-api.add_resource(BatchRun, '/fit')
-api.add_resource(BatchResult, '/fit/result/<id>')
-api.add_resource(BatchStatus, '/fit/status/<id>')
+@app.route('/timeline')
+def timeline():
+    return app.send_static_file('tv/trace_viewer_embedder.html')
 
 if __name__ == "__main__":
    # cmdline_test()
-   app.run(debug=True)
-   pass
+   app.run()
