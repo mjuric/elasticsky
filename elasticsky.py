@@ -243,7 +243,6 @@ def cmdline_test():
 ##
 ## Flask app. Should be refactored to its own module.
 ##
-import datetime
 
 class FitRunner:
     def __init__(self, fn):
@@ -261,7 +260,7 @@ class FitRunner:
         # the ETA if it's still running
 
         if self.tend is None:
-            now = datetime.datetime.now()
+            now = datetime.now()
             if len(self.tasks) == 0:
                 self.tend = now
         else:
@@ -270,12 +269,12 @@ class FitRunner:
         dt = now - self.tstart
 
         if self.result:
-            return dt.seconds, (self.total / len(self.result) - 1) * dt.seconds;
+            return dt, timedelta(seconds = (self.total / len(self.result) - 1) * dt.seconds);
         else:
-            return dt.seconds, "unknown"
+            return dt, None
 
     def start(self, chunk_size=10, ntracklets=None):
-        self.tstart = datetime.datetime.now()
+        self.tstart = datetime.now()
     
         if ntracklets is None:
             ntracklets = len(self.df['trkSub'].unique())
@@ -307,119 +306,289 @@ class FitRunner:
 
         return len(results)
 
-from flask import Flask, request, redirect
-from flask_restful import Resource, Api, reqparse, abort
-import werkzeug
-import os
+###############################
+#
+# Flask API
+#
 
-app = Flask(__name__, static_folder=f'{os.getcwd()}/tv', static_url_path='/timeline')
-api = Api(app)
+if False:
+    from flask import Flask, request, redirect
+    from flask_restful import Resource, Api, reqparse, abort
+    import werkzeug
+    import os
 
-# FIXME: this method of storing state won't work in production (in a
-# multiprocessing setting).  I'm not clear what happens with ray in such
-# case, as well.  It's probably best to shift all of this to ray.serve
-# https://docs.ray.io/en/master/serve/ to get things to work nicely.
+    app = Flask(__name__, static_folder=f'{os.getcwd()}/tv', static_url_path='/timeline')
+    api = Api(app)
 
+    # FIXME: this method of storing state won't work in production (in a
+    # multiprocessing setting).  I'm not clear what happens with ray in such
+    # case, as well.  It's probably best to shift all of this to ray.serve
+    # https://docs.ray.io/en/master/serve/ to get things to work nicely.
+
+    batches = {}
+
+    import ray
+    ray.init(address='auto')
+    #ray.init()
+
+    class FitRun(Resource):
+        #
+        # The resource representing a the orbit fitter service.
+        #
+        def get(self):
+            #
+            # Return a list of fits we know of, either in progress or done.
+            #
+            return list(batches.keys())
+
+        def post(self):
+            #
+            # Initiate a new fit. If the file and request correspond to something we've already run,
+            # do not initiate a new run.
+            #
+            parser = reqparse.RequestParser()
+            parser.add_argument('ades', type=werkzeug.datastructures.FileStorage, location='files', help='PSV-serialized ADES file')
+            parser.add_argument('ntracklets', type=int, help="Number of tracklets to process")
+            args = parser.parse_args()
+
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmpdir:
+                fn = f"{tmpdir}/input.psv"
+                args['ades'].save(fn)
+                ntracklets=args["ntracklets"]
+
+                # generate the ID, as hash of the file
+                import hashlib
+                content = open(fn).read() + f"\nntracklets={ntracklets}"
+                id = hashlib.md5(content.encode("utf-8")).hexdigest()
+
+                # start a new fit, if it's not already in batches
+                if id not in batches:
+                    runner = FitRunner(fn)
+                    runner.start(ntracklets=ntracklets)
+
+                    batches[id] = runner
+
+                    return { 'id': id }, 201
+                else:
+                    return { 'id': id }, 200
+
+            # We're not supposed to get here
+            assert(False)
+
+    class FitStatus(Resource):
+        #
+        # The resource representing the status of a fit
+        #
+        def get(self, id):
+            runner = batches[id]
+            runner.collect()
+
+            done = len(runner.result)
+            running = runner.total - done
+            runtime, eta = runner.stats()
+
+            return {
+                'ncores': ray.cluster_resources()['CPU'],
+                'trk_done': done,
+                'trk_running': running,
+                'started': str(runner.tstart),
+                'runtime_seconds': runtime,
+                'eta_seconds': eta
+            }
+
+    class FitResult(Resource):
+        #
+        # The resource representing the result of a fit. It
+        # could be a partial result.
+        #
+        def get(self, id):
+            runner = batches[id]
+            runner.collect()
+            return runner.result
+
+
+    class TimelineResource(Resource):
+        def get(self):
+            traceJson = ray.timeline()
+            return traceJson
+
+    api.add_resource(FitRun, '/fit')
+    api.add_resource(FitResult, '/fit/result/<id>')
+    api.add_resource(FitStatus, '/fit/status/<id>')
+    api.add_resource(TimelineResource, '/timeline-json')
+
+    @app.route('/timeline')
+    @app.route('/timeline/')
+    def hello():
+        return redirect("/timeline/index.html", code=302)
+
+    if __name__ == "__main__":
+        import os
+        print(f"CWD={os.getcwd()}")
+       # cmdline_test()
+        app.run(debug=True)
+
+###############################################
+#
+# FastAPI server
+#
+
+#
+# Quick API sketch:
+#      GET /fit              -> [ id1, id2, ... ]
+#     POST /fit/[FILE]       -> { id: str }, 202 (Accepted)
+#      GET /fit/<id>         -> { status }
+#      GET /fit/<id>/result  -> { results }
+#
+
+from typing import Optional
+
+from fastapi import FastAPI, Path, Query, Request, Response, File, UploadFile, Form
+from pydantic import BaseModel, HttpUrl, Field
+from typing import List, Optional, Any
+from datetime import datetime, timedelta
+
+tags_metadata = [
+    {
+        "name": "fitter",
+        "description": "Orbit fitting operations",
+    }
+]
+
+app = FastAPI(
+    title = "Orbit Fitter Service",
+    description = "Scalable service for Solar System orbit fitting",
+    version="0.0.1",
+    openapi_tags=tags_metadata
+)
+
+# List of jobs
 batches = {}
 
-import ray
-ray.init(address='auto')
-#ray.init()
+#######################################################
 
-class FitRun(Resource):
+class Job(BaseModel):
+    id: str = Field(..., max_length=40, title='Job identifier', description='An idenfitier uniquely identifying this job')
+    url: HttpUrl = Field(..., title='Job resource URL', description='Resource URL to check for job status and fetch results')
+
+@app.get(
+    "/fit",
+    summary="List all pending or completed jobs.",
+    tags=[ "fitter" ],
+    response_model=List[Job],
+    response_description="List of pending or completed jobs."
+)
+async def fit_get(
+    request: Request,
+):
+    result = []
+    for id in batches.keys():
+        url = request.url_for("fit_id_get", id=id)
+
+        result.append(Job(id=id, url=url))
+    return result
+
+@app.post(
+    "/fit",
+    summary="Submit an orbit fitting job",
+    tags=[ "fitter" ],
+    response_model=Job,
+    response_description="Description of the created job",
+    status_code=200
+)
+async def fit_post(
+    request: Request,
+    response: Response,
+    ades: bytes = File(..., description="PSV-serialized ADES file"),
+    ntracklets: int = Form(None, description="Number of tracklets to process", ge=1)
+):
     #
-    # The resource representing a the orbit fitter service.
+    # Initiate a new fit. If the file and request correspond to something we've already run,
+    # do not initiate a new run.
     #
-    def get(self):
-        #
-        # Return a list of fits we know of, either in progress or done.
-        #
-        return list(batches.keys())
+    import tempfile, shutil
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fn = f"{tmpdir}/input.psv"
+        with open(fn, 'wb') as fp:
+            fp.write(ades)
 
-    def post(self):
-        #
-        # Initiate a new fit. If the file and request correspond to something we've already run,
-        # do not initiate a new run.
-        #
-        parser = reqparse.RequestParser()
-        parser.add_argument('ades', type=werkzeug.datastructures.FileStorage, location='files', help='PSV-serialized ADES file')
-        parser.add_argument('ntracklets', type=int, help="Number of tracklets to process")
-        args = parser.parse_args()
+        # generate the ID, as hash of the file
+        import hashlib
+        content = open(fn).read() + f"\nntracklets={ntracklets}"
+        id = hashlib.md5(content.encode("utf-8")).hexdigest()
 
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            fn = f"{tmpdir}/input.psv"
-            args['ades'].save(fn)
-            ntracklets=args["ntracklets"]
+        if not ray.is_initialized():
+            ray.init(address='auto')
 
-            # generate the ID, as hash of the file
-            import hashlib
-            content = open(fn).read() + f"\nntracklets={ntracklets}"
-            id = hashlib.md5(content.encode("utf-8")).hexdigest()
+        # start a new fit, if it's not already in batches
+        if id not in batches:
+            runner = FitRunner(fn)
+            runner.start(ntracklets=ntracklets)
 
-            # start a new fit, if it's not already in batches
-            if id not in batches:
-                runner = FitRunner(fn)
-                runner.start(ntracklets=ntracklets)
+            batches[id] = runner
 
-                batches[id] = runner
+            response.status_code = 201
 
-                return { 'id': id }, 201
-            else:
-                return { 'id': id }, 200
+    # compute the resource URL
+    url = request.url_for("fit_id_get", id=id)
 
-        # We're not supposed to get here
-        assert(False)
+    return { 'id': id, 'url': url }
 
-class FitStatus(Resource):
-    #
-    # The resource representing the status of a fit
-    #
-    def get(self, id):
-        runner = batches[id]
-        runner.collect()
+########################
 
-        done = len(runner.result)
-        running = runner.total - done
-        runtime, eta = runner.stats()
+class JobStatus(BaseModel):
+    id: str
+    done: bool
+    ncores: int
+    trk_done: int
+    trk_pending: int
+    started: datetime
+    finished: Optional[datetime]
+    eta: Optional[timedelta]
+    runtime: Optional[timedelta]
 
-        return {
-            'ncores': ray.cluster_resources()['CPU'],
-            'trk_done': done,
-            'trk_running': running,
-            'started': str(runner.tstart),
-            'runtime_seconds': runtime,
-            'eta_seconds': eta
-        }
+@app.get(
+    "/fit/{id:str}",
+    summary="Get job status.",
+    tags=[ "fitter" ],
+    response_model=JobStatus,
+    response_description="Job status details."
+)
+async def fit_id_get(
+    request: Request,
+    id: str
+):
+    runner = batches[id]
+    runner.collect()
 
-class FitResult(Resource):
-    #
-    # The resource representing the result of a fit. It
-    # could be a partial result.
-    #
-    def get(self, id):
-        runner = batches[id]
-        runner.collect()
-        return runner.result
+    trk_done = len(runner.result)
+    trk_pending = runner.total - trk_done
+    runtime, eta = runner.stats()
 
+    return JobStatus(
+        id = id,
+        done = trk_pending == 0,
+        ncores = ray.cluster_resources()['CPU'],
+        trk_done = trk_done,
+        trk_pending = trk_pending,
+        started = runner.tstart,
+        finished = runner.tend,
+        runtime = runtime,
+        eta = eta
+    )
 
-class TimelineResource(Resource):
-    def get(self):
-        traceJson = ray.timeline()
-        return traceJson
-
-api.add_resource(FitRun, '/fit')
-api.add_resource(FitResult, '/fit/result/<id>')
-api.add_resource(FitStatus, '/fit/status/<id>')
-api.add_resource(TimelineResource, '/timeline-json')
-
-@app.route('/timeline')
-@app.route('/timeline/')
-def hello():
-    return redirect("/timeline/index.html", code=302)
-
-if __name__ == "__main__":
-    import os
-    print(f"CWD={os.getcwd()}")
-   # cmdline_test()
-    app.run(debug=True)
+@app.get(
+    "/fit/{id:str}/result",
+    summary="Get job status.",
+    tags=[ "fitter" ],
+    response_model=List[Any],
+    response_description="Results of a job (fitted orbits)."
+)
+async def fit_id_get(
+    request: Request,
+    id: str
+):
+    runner = batches[id]
+    runner.collect()
+    return runner.result
