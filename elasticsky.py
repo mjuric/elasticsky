@@ -76,6 +76,9 @@ def fit_orbits(obsvs, hdr, trkSubs=None):
     """
     import tempfile, subprocess, json, os
 
+##    from timeit import default_timer as timer
+##    start = timer()
+
     if trkSubs is None:
         trkSubs = obsvs['trkSub'].unique()
 
@@ -107,7 +110,9 @@ def fit_orbits(obsvs, hdr, trkSubs=None):
             cmd = f"fo {datafile} -O {resultdir} -D environ.dat"
             env = os.environ.copy()
             env["HOME"] = tmpdir
-            ret = subprocess.run(cmd, shell=True, env=env, check=False, capture_output=True)
+
+            with timing() as orbfit_timer:
+                ret = subprocess.run(cmd, shell=True, env=env, check=False, capture_output=True)
 
             # fetch/construct the result
             if ret.returncode == 0:
@@ -124,17 +129,35 @@ def fit_orbits(obsvs, hdr, trkSubs=None):
             result["findorb"] = {
                 'args': ret.args,
                 'returncode': ret.returncode,
+                'runtime': orbfit_timer.t,
                 'stdout': ret.stdout.decode('utf-8'),
                 'stderr': ret.stderr.decode('utf-8')
             }
 
             results.append(result)
 
+##    dt = timer() - start
+##    results.append({ 'total': dt })
+
     return results
 
 ##
 ## Utilities
 ##
+
+# A context manager for measuring the time it takes to run
+# a block of statements.
+class timing:
+    t = None
+    def __enter__(self):
+        from timeit import default_timer as timer
+        self.start = timer()
+        return self
+
+    def __exit__(self, *args):
+        from timeit import default_timer as timer
+        self.end = timer()
+        self.t = self.end - self.start
 
 # A utility to divide up the tracklets into smaller chunks
 def chunk(k, chunk_size):
@@ -149,11 +172,18 @@ def to_fwf(fn, df):
 
 # Function to display hostname and
 # IP address
+from functools import lru_cache
+@lru_cache
 def gethip():
     import socket
     try:
         host_name = socket.gethostname()
-        host_ip = socket.gethostbyname(host_name)
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 1))  # connect() for UDP doesn't send packets
+        host_ip = s.getsockname()[0]
+        s.close()
+
         return (host_name, host_ip)
     except:
         return (None, None)
@@ -175,7 +205,8 @@ def dist_fit_orbits(df, hdr, tracks):
 def processAdesFile(fn, chunk_size=10, ntracklets=None):
     # load the file
     df, hdr = read_psv_ades(fn)
-    del df["rmsMag"] # workaround for FindOrb bug
+    if "rmsMag" in df:
+        del df["rmsMag"] # workaround for FindOrb bug
 
     # subdivide it into smaller chunks, with N tracklets each. These
     # chunks will be submitted to individual FindOrb threads to work on.
@@ -198,7 +229,8 @@ def processAdesFile(fn, chunk_size=10, ntracklets=None):
 def processAdesFile_single(fn, ntracklets=None):
     # load the file
     df, hdr = read_psv_ades(fn)
-    del df["rmsMag"] # workaround for FindOrb bug
+    if "rmsMag" in df:
+        del df["rmsMag"] # workaround for FindOrb bug
 
     tracks = df["trkSub"].unique()[:ntracklets]
     results = fit_orbits(df, hdr, tracks)
@@ -247,7 +279,8 @@ def cmdline_test():
 class FitRunner:
     def __init__(self, fn):
         df, hdr = read_psv_ades(fn)
-        del df["rmsMag"] # workaround for FindOrb bug
+        if "rmsMag" in df:
+            del df["rmsMag"] # workaround for FindOrb bug
 
         self.df, self.hdr = df, hdr
         self.total = len(self.df)
@@ -444,7 +477,7 @@ if False:
 
 from typing import Optional
 
-from fastapi import FastAPI, Path, Query, Request, Response, File, UploadFile, Form
+from fastapi import FastAPI, Path, Query, Request, Response, File, UploadFile, Form, HTTPException
 from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Any
 from datetime import datetime, timedelta
@@ -559,7 +592,11 @@ async def fit_id_get(
     request: Request,
     id: str
 ):
-    runner = batches[id]
+    try:
+        runner = batches[id]
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found")
+
     runner.collect()
 
     trk_done = len(runner.result)
@@ -589,6 +626,10 @@ async def fit_id_get(
     request: Request,
     id: str
 ):
-    runner = batches[id]
+    try:
+        runner = batches[id]
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found")
+
     runner.collect()
     return runner.result
