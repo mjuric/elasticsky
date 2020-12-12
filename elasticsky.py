@@ -334,7 +334,7 @@ class FitRun(Resource):
         #
         # Return a list of fits we know of, either in progress or done.
         #
-        return batches.keys()
+        return list(batches.keys())
 
     def post(self):
         #
