@@ -3,7 +3,7 @@ cluster_name: elasticsky
 
 # The minimum number of workers nodes to launch in addition to the head
 # node. This number should be >= 0.
-min_workers: 20
+min_workers: 1
 
 # The maximum number of workers nodes to launch in addition to the head
 # node. This takes precedence over min_workers.
@@ -12,7 +12,7 @@ max_workers: 50
 # The initial number of worker nodes to launch in addition to the head
 # node. When the cluster is first brought up (or when it is refreshed with a
 # subsequent `ray up`) this number of nodes will be started.
-initial_workers: 0
+initial_workers: 1
 
 # Whether or not to autoscale aggressively. If this is enabled, if at any point
 #   we would start more workers, we start at least enough to bring us to
@@ -25,6 +25,7 @@ autoscaling_mode: default
 docker:
 #    image: "rayproject/ray:latest-cpu" # You can change this to latest-cpu if you don't need GPU support and want a faster startup
     image: "mjuric/elasticsky:latest" # You can change this to latest-cpu if you don't need GPU support and want a faster startup
+#    image: "808034228930.dkr.ecr.us-west-2.amazonaws.com/elasticsky:latest"
     container_name: "ray_container"
     # If true, pulls latest version of image. Otherwise, `docker run` will only pull the image
     # if no cached version is present.
@@ -46,7 +47,7 @@ docker:
 target_utilization_fraction: 0.5
 
 # If a node is idle for this many minutes, it will be removed.
-idle_timeout_minutes: 15
+idle_timeout_minutes: 10
 
 # Cloud-provider specific configuration.
 provider:
@@ -73,14 +74,16 @@ auth:
 # For more documentation on available fields, see:
 # http://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.ServiceResource.create_instances
 head_node:
-    InstanceType: m5.large
-    ImageId: ami-0a2363a9cff180a64 # Deep Learning AMI (Ubuntu) Version 30
+    InstanceType: c5.large
+#    ImageId: ami-0a2363a9cff180a64 # Deep Learning AMI (Ubuntu) Version 30
+#    ImageId: ami-04940b44ffe7c3531 # Deep Learning AMI (Ubuntu) Version 30 + pre-pulled elasticsky container
+    ImageId: ami-008c86c5a17815735 # custom image built with packer
 
     # You can provision additional disk space with a conf as follows
-    BlockDeviceMappings:
-        - DeviceName: /dev/sda1
-          Ebs:
-              VolumeSize: 100
+#    BlockDeviceMappings:
+#        - DeviceName: /dev/sda1
+#          Ebs:
+#              VolumeSize: 100
 
     # Additional options in the boto docs.
 
@@ -89,8 +92,14 @@ head_node:
 # For more documentation on available fields, see:
 # http://boto3.readthedocs.io/en/latest/reference/services/ec2.html#EC2.ServiceResource.create_instances
 worker_nodes:
-    InstanceType: m5.large
-    ImageId: ami-0a2363a9cff180a64 # Deep Learning AMI (Ubuntu) Version 30
+    InstanceType: c5.large
+    # inspired by https://github.com/ray-project/ray/issues/9327
+    IamInstanceProfile:
+#        Arn: 'arn:aws:iam::808034228930:instance-profile/ray-autoscaler-v1'
+        Name: 'ray-autoscaler-v1'
+#    ImageId: ami-0a2363a9cff180a64 # Deep Learning AMI (Ubuntu) Version 30
+#    ImageId: ami-04940b44ffe7c3531 # Deep Learning AMI (Ubuntu) Version 30 + pre-pulled elasticsky container
+    ImageId: ami-008c86c5a17815735 # custom image built with packer
 
     # Run workers on spot by default. Comment this out to use on-demand.
     InstanceMarketOptions:
@@ -132,7 +141,8 @@ rsync_filter:
 # List of commands that will be run before `setup_commands`. If docker is
 # enabled, these commands will run outside the container and before docker
 # is setup.
-initialization_commands: []
+initialization_commands:
+    - aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 808034228930.dkr.ecr.us-west-2.amazonaws.com
 
 # List of shell commands to run to set up nodes.
 setup_commands: []
