@@ -173,7 +173,7 @@ def to_fwf(fn, df):
 # Function to display hostname and
 # IP address
 from functools import lru_cache
-@lru_cache
+@lru_cache(maxsize=1)
 def gethip():
     import socket
     try:
@@ -687,3 +687,14 @@ async def timeline_redirect(
 
 from fastapi.staticfiles import StaticFiles
 app.mount("/timeline", StaticFiles(directory="tv"), name="timeline")
+
+import os
+import uvicorn
+
+if __name__ == "__main__":
+    # bind to 0.0.0.0 if running in docker (127.0.0.1 isn't port-mapped on
+    # the Mac)
+    in_docker = os.path.exists('/.dockerenv')
+    host = "0.0.0.0" if in_docker else "127.0.0.1"
+
+    uvicorn.run("elasticsky:app", host=host, port=5000, log_level="info")

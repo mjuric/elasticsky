@@ -20,3 +20,21 @@ watch "curl -s http://127.0.0.1:5000/fit/status/$ID"
 curl -s "http://127.0.0.1:5000/fit/result/$ID" | jq -r '.[] | {trkSub: .name, epoch, state: .state_vect}'
 curl -s "http://127.0.0.1:5000/fit/result/$ID" | jq -r '.[] | [ .name, .epoch, .state_vect[0], .state_vect[1], .state_vect[2], .state_vect[3], .state_vect[4], .state_vect[5] ] | @tsv'
 ```
+
+### Development
+
+Running outside docker
+```
+ray start --head
+./elasticsky.py
+```
+
+Building/running in Docker
+```
+docker build . -t elasticsky:latest
+docker run --rm -it -v $PWD:/data -p 5000:5000 elasticsky:latest
+
+# in the container, run
+ray start --head
+./elasticsky.py
+```

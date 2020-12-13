@@ -19,7 +19,7 @@ RUN mkdir ~/software && cd ~/software \
 	&& rm -r ~/software
 
 # elasticsky dependencies
-RUN conda install -c defaults -c conda-forge tabulate flask-restful --yes \
+RUN conda install -c defaults -c conda-forge tabulate uvicorn fastapi python-multipart passlib aiofiles --yes \
  	&& conda clean --all --yes
 
 # elasticsky data
