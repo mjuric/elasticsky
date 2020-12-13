@@ -170,23 +170,26 @@ def to_fwf(fn, df):
         fp.write(content)
         fp.write("\n")
 
-# Function to display hostname and
-# IP address
-from functools import lru_cache
-@lru_cache(maxsize=1)
+# Function to display hostname and IP address
+_iphost = None
 def gethip():
-    import socket
-    try:
-        host_name = socket.gethostname()
+    # cache the name resolution
+    global _iphost
+    if _iphost is None:
+        import socket
+        try:
+            host_name = socket.gethostname()
 
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('8.8.8.8', 1))  # connect() for UDP doesn't send packets
-        host_ip = s.getsockname()[0]
-        s.close()
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(('8.8.8.8', 1))  # connect() for UDP doesn't send packets
+            host_ip = s.getsockname()[0]
+            s.close()
 
-        return (host_name, host_ip)
-    except:
-        return (None, None)
+            _iphost = (host_name, host_ip)
+        except:
+            _iphost = (None, None)
+
+    return _iphost
 
 ##
 ## Ray support
@@ -697,4 +700,4 @@ if __name__ == "__main__":
     in_docker = os.path.exists('/.dockerenv')
     host = "0.0.0.0" if in_docker else "127.0.0.1"
 
-    uvicorn.run("elasticsky:app", host=host, port=5000, log_level="info")
+    uvicorn.run(app, host=host, port=5000, log_level="info")
