@@ -477,7 +477,8 @@ if False:
 
 from typing import Optional
 
-from fastapi import FastAPI, Path, Query, Request, Response, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, Path, Query, Request, Response, File, UploadFile, Form, HTTPException, Depends, status
+from starlette.responses import RedirectResponse
 from pydantic import BaseModel, HttpUrl, Field
 from typing import List, Optional, Any
 from datetime import datetime, timedelta
@@ -495,6 +496,30 @@ app = FastAPI(
     version="0.0.1",
     openapi_tags=tags_metadata
 )
+
+@app.on_event("startup")
+async def startup_event():
+    ray.init(address='auto')
+
+#########################################3
+
+# Authentication (quick and dirty)
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+security = HTTPBasic()
+
+async def authenticate(
+    credentials: HTTPBasicCredentials = Depends(security)
+):
+    from passlib.apache import HtpasswdFile
+    ht = HtpasswdFile("elasticsky.htpasswd")
+
+    if not ht.check_password(credentials.username, credentials.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 # List of jobs
 batches = {}
@@ -514,6 +539,7 @@ class Job(BaseModel):
 )
 async def fit_get(
     request: Request,
+    credentials: HTTPBasicCredentials = Depends(authenticate)
 ):
     result = []
     for id in batches.keys():
@@ -533,6 +559,7 @@ async def fit_get(
 async def fit_post(
     request: Request,
     response: Response,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
     ades: bytes = File(..., description="PSV-serialized ADES file"),
     ntracklets: int = Form(None, description="Number of tracklets to process", ge=1)
 ):
@@ -550,9 +577,6 @@ async def fit_post(
         import hashlib
         content = open(fn).read() + f"\nntracklets={ntracklets}"
         id = hashlib.md5(content.encode("utf-8")).hexdigest()
-
-        if not ray.is_initialized():
-            ray.init(address='auto')
 
         # start a new fit, if it's not already in batches
         if id not in batches:
@@ -590,7 +614,8 @@ class JobStatus(BaseModel):
 )
 async def fit_id_get(
     request: Request,
-    id: str
+    id: str,
+    credentials: HTTPBasicCredentials = Depends(authenticate)
 ):
     try:
         runner = batches[id]
@@ -624,7 +649,8 @@ async def fit_id_get(
 )
 async def fit_id_get(
     request: Request,
-    id: str
+    id: str,
+    credentials: HTTPBasicCredentials = Depends(authenticate)
 ):
     try:
         runner = batches[id]
