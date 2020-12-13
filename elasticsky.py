@@ -659,3 +659,31 @@ async def fit_id_get(
 
     runner.collect()
     return runner.result
+
+########################################################
+
+@app.get(
+    "/timeline-json",
+    summary="Get Ray timeline in Chrome trace .json format",
+    tags=["diagnostics"],
+    response_description="The timeline in Chrome's trace JSON format",
+)
+async def timeline_get(
+    credentials: HTTPBasicCredentials = Depends(authenticate)
+):
+    traceJson = ray.timeline()
+    return traceJson
+
+@app.get(
+    '/timeline',
+    summary="Display a trace of Ray timeline",
+    tags=["diagnostics"],
+)
+@app.get('/timeline/', include_in_schema=False)
+async def timeline_redirect(
+    credentials: HTTPBasicCredentials = Depends(authenticate)
+):
+    return RedirectResponse(url='/timeline/index.html', status_code=302)
+
+from fastapi.staticfiles import StaticFiles
+app.mount("/timeline", StaticFiles(directory="tv"), name="timeline")
