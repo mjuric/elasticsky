@@ -494,6 +494,7 @@ tags_metadata = [
 ]
 
 app = FastAPI(
+    root_path="/api/v1",
     title = "Orbit Fitter Service",
     description = "Scalable service for Solar System orbit fitting",
     version="0.0.1",
@@ -506,23 +507,32 @@ async def startup_event():
 
 #########################################3
 
-# Authentication (quick and dirty)
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-security = HTTPBasic()
+import os
 
-async def authenticate(
-    credentials: HTTPBasicCredentials = Depends(security)
-):
-    from passlib.apache import HtpasswdFile
-    ht = HtpasswdFile("elasticsky.htpasswd")
+from fastapi.security import HTTPBasicCredentials
 
-    if not ht.check_password(credentials.username, credentials.password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
+if "ELASTICSKY_HTPASSWD" in os.environ:
+    # Authentication (quick and dirty)
+    from fastapi.security import HTTPBasic, HTTPBasicCredentials
+    security = HTTPBasic()
+
+    async def authenticate(
+        credentials: HTTPBasicCredentials = Depends(security)
+    ):
+        from passlib.apache import HtpasswdFile
+        ht = HtpasswdFile(os.environ["ELASTICSKY_HTPASSWD"])
+
+        if not ht.check_password(credentials.username, credentials.password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+        return credentials.username
+else:
+    print("Running w/o direct API authentication; make sure your proxy authenticates");
+    async def authenticate():
+        return "anonymous"
 
 # List of jobs
 batches = {}
@@ -684,9 +694,10 @@ async def timeline_get(
 )
 @app.get('/timeline/', include_in_schema=False)
 async def timeline_redirect(
+    request: Request,
     credentials: HTTPBasicCredentials = Depends(authenticate)
 ):
-    return RedirectResponse(url='/timeline/index.html', status_code=302)
+    return RedirectResponse(url=request.url_for('timeline_redirect') + "index.html", status_code=302)
 
 from fastapi.staticfiles import StaticFiles
 app.mount("/timeline", StaticFiles(directory="tv"), name="timeline")
