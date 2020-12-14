@@ -276,7 +276,7 @@ def cmdline_test():
 
 
 ##
-## Flask app. Should be refactored to its own module.
+## Web API app. Should be refactored to its own module.
 ##
 
 class FitRunner:
@@ -341,129 +341,6 @@ class FitRunner:
         self.tasks = tasks
 
         return len(results)
-
-###############################
-#
-# Flask API
-#
-
-if False:
-    from flask import Flask, request, redirect
-    from flask_restful import Resource, Api, reqparse, abort
-    import werkzeug
-    import os
-
-    app = Flask(__name__, static_folder=f'{os.getcwd()}/tv', static_url_path='/timeline')
-    api = Api(app)
-
-    # FIXME: this method of storing state won't work in production (in a
-    # multiprocessing setting).  I'm not clear what happens with ray in such
-    # case, as well.  It's probably best to shift all of this to ray.serve
-    # https://docs.ray.io/en/master/serve/ to get things to work nicely.
-
-    batches = {}
-
-    import ray
-    ray.init(address='auto')
-    #ray.init()
-
-    class FitRun(Resource):
-        #
-        # The resource representing a the orbit fitter service.
-        #
-        def get(self):
-            #
-            # Return a list of fits we know of, either in progress or done.
-            #
-            return list(batches.keys())
-
-        def post(self):
-            #
-            # Initiate a new fit. If the file and request correspond to something we've already run,
-            # do not initiate a new run.
-            #
-            parser = reqparse.RequestParser()
-            parser.add_argument('ades', type=werkzeug.datastructures.FileStorage, location='files', help='PSV-serialized ADES file')
-            parser.add_argument('ntracklets', type=int, help="Number of tracklets to process")
-            args = parser.parse_args()
-
-            import tempfile
-            with tempfile.TemporaryDirectory() as tmpdir:
-                fn = f"{tmpdir}/input.psv"
-                args['ades'].save(fn)
-                ntracklets=args["ntracklets"]
-
-                # generate the ID, as hash of the file
-                import hashlib
-                content = open(fn).read() + f"\nntracklets={ntracklets}"
-                id = hashlib.md5(content.encode("utf-8")).hexdigest()
-
-                # start a new fit, if it's not already in batches
-                if id not in batches:
-                    runner = FitRunner(fn)
-                    runner.start(ntracklets=ntracklets)
-
-                    batches[id] = runner
-
-                    return { 'id': id }, 201
-                else:
-                    return { 'id': id }, 200
-
-            # We're not supposed to get here
-            assert(False)
-
-    class FitStatus(Resource):
-        #
-        # The resource representing the status of a fit
-        #
-        def get(self, id):
-            runner = batches[id]
-            runner.collect()
-
-            done = len(runner.result)
-            running = runner.total - done
-            runtime, eta = runner.stats()
-
-            return {
-                'ncores': ray.cluster_resources()['CPU'],
-                'trk_done': done,
-                'trk_running': running,
-                'started': str(runner.tstart),
-                'runtime_seconds': runtime,
-                'eta_seconds': eta
-            }
-
-    class FitResult(Resource):
-        #
-        # The resource representing the result of a fit. It
-        # could be a partial result.
-        #
-        def get(self, id):
-            runner = batches[id]
-            runner.collect()
-            return runner.result
-
-
-    class TimelineResource(Resource):
-        def get(self):
-            traceJson = ray.timeline()
-            return traceJson
-
-    api.add_resource(FitRun, '/fit')
-    api.add_resource(FitResult, '/fit/result/<id>')
-    api.add_resource(FitStatus, '/fit/status/<id>')
-    api.add_resource(TimelineResource, '/timeline-json')
-
-    @app.route('/timeline')
-    @app.route('/timeline/')
-    def hello():
-        return redirect("/timeline/index.html", code=302)
-
-    if __name__ == "__main__":
-        import os
-        print(f"CWD={os.getcwd()}")
-       # cmdline_test()
-        app.run(debug=True)
 
 ###############################################
 #
