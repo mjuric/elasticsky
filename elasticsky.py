@@ -1,6 +1,13 @@
 #!/usr/bin/env python
 
 import pandas as pd
+import logging
+from logging import info
+
+import os, sys
+#LOGLEVEL = os.environ.get('LOGLEVEL', 'WARNING').upper()
+#print(LOGLEVEL)
+#logging.basicConfig(level=LOGLEVEL)
 
 ##
 ## ADES reading/writing
@@ -96,7 +103,7 @@ def fit_orbits(obsvs, hdr, trkSubs=None):
 
         # Fit tracklet by tracklet
         for trkSub in trkSubs:
-            print(f"[{gethip()[1]}:{tmpdir}] {trkSub}")
+            print(f"[{gethip()[1]}:{tmpdir}] {trkSub}", file=sys.stderr)
 
             # select only the current tracklet
             df = obsvs[obsvs["trkSub"] == trkSub]
@@ -286,32 +293,19 @@ class FitRunner:
             del df["rmsMag"] # workaround for FindOrb bug
 
         self.df, self.hdr = df, hdr
-        self.total = len(self.df)
         self.result = []
-        
+
+        self.tstart = None
         self.tend = None
+        self._eta = None
+        self._runtime = None
 
-    def stats(self):
-        # return the time this batch took to execute, and
-        # the ETA if it's still running
-
-        if self.tend is None:
-            now = datetime.now()
-            if len(self.tasks) == 0:
-                self.tend = now
-        else:
-            now = self.tend
-
-        dt = now - self.tstart
-
-        if self.result:
-            return dt, timedelta(seconds = (self.total / len(self.result) - 1) * dt.seconds);
-        else:
-            return dt, None
+        self._ncores = ray.cluster_resources()['CPU']
 
     def start(self, chunk_size=10, ntracklets=None):
+        from datetime import datetime
         self.tstart = datetime.now()
-    
+
         if ntracklets is None:
             ntracklets = len(self.df['trkSub'].unique())
 
@@ -327,27 +321,130 @@ class FitRunner:
         self.result = []
         self.total = min(len(self.df), ntracklets)
 
-    async def collect(self, num_returns=None, timeout=0):
-        if num_returns == None:
-            num_returns = len(self.tasks)
+        # start the result collection task
+        self._resultCond = asyncio.Condition()
+        return asyncio.create_task(self._collect())
 
-        if len(self.tasks) == 0:
-            return 0
-
+    async def _collect(self):
         # collect the results that have finished
-#        done, tasks = ray.wait(self.tasks, num_returns=num_returns, timeout=timeout)
-#        chunked_results = ray.get(done)
         import asyncio
-        done, tasks = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED, timeout=timeout)
-        chunked_results = [ task.result() for task in done ]
+        from datetime import datetime, timedelta
 
-        results = [result for chunk in chunked_results for result in chunk]
-        
-        self.result += results
-        self.tasks = tasks
+        while len(self.tasks) != 0:
+            # await for new results
+            done, tasks = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED)
 
-        print("len(result)=", len(self.result))
-        return len(results)
+            # collect and reformat them
+            chunked_results = [ task.result() for task in done ]
+            results = [result for chunk in chunked_results for result in chunk]
+
+            # append them to the result list, notify any listeners that new data
+            # is available
+            async with self._resultCond:
+                # update the results, pending tasks
+                self.result += results
+                self.tasks = tasks
+
+                # capture progress metrics
+                now = datetime.now()
+                self._runtime = now - self.tstart  # elapsed time
+                self._eta = timedelta(seconds = (self.total / len(self.result) - 1) * self._runtime.seconds) if self.result else None
+                self._ncores = ray.cluster_resources()['CPU']
+
+                # notify any listeners
+                self._resultCond.notify_all()
+
+        # job finished, record the time and that we're done
+        self.tend = now
+
+    async def status(self):
+        # return job status information
+
+        trk_done = len(self.result)
+        trk_pending = self.total - trk_done
+
+        return dict(
+                    done = trk_pending == 0,
+                    ncores = self._ncores,
+                    trk_done = trk_done,
+                    trk_pending = trk_pending,
+                    started = self.tstart,
+                    finished = self.tend,
+                    runtime = self._runtime,
+                    eta = self._eta
+        )
+
+    async def stream(self, begin=0, end=None):
+        # stream back the results from [begin, end),
+        # awaiting for that range to become available
+        # as necessary.
+
+        if begin is None:
+            begin = 0
+
+        if end is None:
+            end = float("inf")
+
+        async with self._resultCond:
+            # collect until there are at least `begin` results
+            while begin < len(self.result) and self.tasks:
+                await self._resultCond.wait()
+
+            # iterate and yield until we reach `end`
+            at = begin
+            while True:
+                # yield what we've gathered so far
+                while at < min(end, len(self.result)):
+                    # FIXME: we should release _resultCond lock when yelding
+                    yield self.result[at]
+                    at += 1
+
+                # stop if we reached the requested end, or if there are no
+                # more tasks that could generate results
+                if at == end or not self.tasks:
+                    break
+
+                # otherwise, await for more results
+                await self._resultCond.wait()
+
+import ujson as json
+async def _json_streamer(stream):
+    # take an iterable stream, which returns a json-seriazable
+    # object on every iteration, serialize it, and
+    # yield as a list of JSON objects. The result looks like:
+    # [
+    #   obj0,
+    #   obj1,
+    #   ...
+    #   objN
+    # ]
+    yield "["
+    c = "\n  "
+    async for result in stream:
+        ret = c + json.dumps(result)
+        yield ret
+        c = ",\n  "
+    yield "\n]\n"
+
+async def main():
+    ray.init(address='auto')
+
+    runner = FitRunner("mini.psv")
+    runner.start(chunk_size=2)
+
+    print(await runner.status(), file=sys.stderr)
+
+    # stream back the result
+    async for js in _json_streamer(runner.stream()):
+        print(js, end='', flush=True)
+        print(await runner.status(), file=sys.stderr)
+
+    print(await runner.status(), file=sys.stderr)
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+    exit(0)
 
 ###############################################
 #
@@ -519,22 +616,11 @@ async def fit_id_get(
     except KeyError:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    await runner.collect()
-
-    trk_done = len(runner.result)
-    trk_pending = runner.total - trk_done
-    runtime, eta = runner.stats()
+    stats = await runner.status()
 
     return JobStatus(
         id = id,
-        done = trk_pending == 0,
-        ncores = ray.cluster_resources()['CPU'],
-        trk_done = trk_done,
-        trk_pending = trk_pending,
-        started = runner.tstart,
-        finished = runner.tend,
-        runtime = runtime,
-        eta = eta
+        **stats
     )
 
 from fastapi.responses import StreamingResponse
@@ -558,25 +644,9 @@ async def fit_id_get(
     except KeyError:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    # return what the user asked for:
-    # begin: starting point -- we may need to wait on collect if
-    #        we haven't reached it yet
-    if begin is None:
-        begin = 0
-    while begin < len(runner.result) and len(runner.tasks):
-        await runner.collect(num_returns=1, timeout=None)
+    # stream back the result
+    return StreamingResponse(_json_streamer(runner.stream(begin, end)))
 
-    # end:
-    #   a) if a number, return result[begin:end]
-    #   b) if None, return until the batch is finished
-    if end is None:
-        await runner.collect(timeout=None)
-    else:
-        while len(runner.result) < end and len(runner.tasks):
-            await runner.collect(num_returns=1, timeout=None)
-
-#    print(begin, end, len(runner.result))
-    return runner.result[begin:end]
 
 ########################################################
 
