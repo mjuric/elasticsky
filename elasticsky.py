@@ -1,13 +1,9 @@
 #!/usr/bin/env python
 
 import pandas as pd
-import logging
-from logging import info
+import asyncio
 
 import os, sys
-#LOGLEVEL = os.environ.get('LOGLEVEL', 'WARNING').upper()
-#print(LOGLEVEL)
-#logging.basicConfig(level=LOGLEVEL)
 
 ##
 ## ADES reading/writing
@@ -103,7 +99,8 @@ def fit_orbits(obsvs, hdr, trkSubs=None):
 
         # Fit tracklet by tracklet
         for trkSub in trkSubs:
-            print(f"[{gethip()[1]}:{tmpdir}] {trkSub}", file=sys.stderr)
+            #print(f"[{gethip()[1]}:{tmpdir}] {trkSub}", file=sys.stderr)
+            print(".", file=sys.stderr, end="")
 
             # select only the current tracklet
             df = obsvs[obsvs["trkSub"] == trkSub]
@@ -318,12 +315,33 @@ class FitRunner:
         self.tasks = [
             dist_fit_orbits.remote(df_id, self.hdr, track_batch) for track_batch in tracks
         ]
+        self.ray_tasks = self.tasks
         self.result = []
         self.total = min(len(self.df), ntracklets)
 
         # start the result collection task
         self._resultCond = asyncio.Condition()
-        return asyncio.create_task(self._collect())
+        self._collectTask = asyncio.create_task(self._collect())
+        
+        return self._collectTask
+
+    async def stop(self):
+        # stop the result collection task
+        try:
+            self._collectTask.cancel()
+            await self._collectTask
+        except asyncio.CancelledError:
+            pass
+
+        if self.tasks:
+            # stop the computation tasks.
+            # FIXME: when I tried cancelling these using self.tasks[].cancel(),
+            # mysterious errors popped up.  Is this a ray bug?
+            for task in self.ray_tasks:
+                print(f"Cancelling task {task}...")
+                ray.cancel(task)
+
+            await asyncio.gather(*self.ray_tasks, return_exceptions=True)
 
     async def _collect(self):
         # collect the results that have finished
@@ -387,7 +405,8 @@ class FitRunner:
 
         async with self._resultCond:
             # collect until there are at least `begin` results
-            while begin < len(self.result) and self.tasks:
+            while begin > len(self.result) and self.tasks:
+#                print(f"stream: about to wait() [1] -- begin={begin}")
                 await self._resultCond.wait()
 
             # iterate and yield until we reach `end`
@@ -405,26 +424,15 @@ class FitRunner:
                     break
 
                 # otherwise, await for more results
+#                print("stream: about to wait() [2]")
                 await self._resultCond.wait()
+#                print("stream: out of wait --- [2]")
 
+# See http://ndjson.org/
 import ujson as json
-async def _json_streamer(stream):
-    # take an iterable stream, which returns a json-seriazable
-    # object on every iteration, serialize it, and
-    # yield as a list of JSON objects. The result looks like:
-    # [
-    #   obj0,
-    #   obj1,
-    #   ...
-    #   objN
-    # ]
-    yield "["
-    c = "\n  "
+async def _ndjson_streamer(stream):
     async for result in stream:
-        ret = c + json.dumps(result)
-        yield ret
-        c = ",\n  "
-    yield "\n]\n"
+        yield json.dumps(result) + "\n"
 
 async def main():
     ray.init(address='auto')
@@ -435,16 +443,16 @@ async def main():
     print(await runner.status(), file=sys.stderr)
 
     # stream back the result
-    async for js in _json_streamer(runner.stream()):
+    async for js in _ndjson_streamer(runner.stream()):
         print(js, end='', flush=True)
         print(await runner.status(), file=sys.stderr)
 
     print(await runner.status(), file=sys.stderr)
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
-    exit(0)
+#if __name__ == "__main__":
+#    import asyncio
+#    asyncio.run(main())
+#    exit(0)
 
 ###############################################
 #
@@ -482,7 +490,10 @@ app = FastAPI(
     openapi_tags=tags_metadata
 )
 
-@app.on_event("startup")
+rootapp = FastAPI()
+rootapp.mount("/api/v1", app)
+
+@rootapp.on_event("startup")
 async def startup_event():
     ray.init(address='auto')
 
@@ -575,7 +586,7 @@ async def fit_post(
         # start a new fit, if it's not already in batches
         if id not in batches:
             runner = FitRunner(fn)
-            runner.start(ntracklets=ntracklets)
+            runner.start(chunk_size=2, ntracklets=ntracklets)
 
             batches[id] = runner
 
@@ -623,6 +634,29 @@ async def fit_id_get(
         **stats
     )
 
+@app.delete(
+    "/fit/{id:str}",
+    summary="Stop the fit and delete any results.",
+    tags=[ "fitter" ],
+    response_description="Delete fit job and results."
+)
+async def fit_id_delete(
+    request: Request,
+    id: str,
+    credentials: HTTPBasicCredentials = Depends(authenticate)
+):
+    try:
+        runner = batches[id]
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    del batches[id]
+
+    # stop the runner in the background
+    asyncio.create_task(runner.stop())
+
+    return dict(message=f'Deleted job {id}')
+
 from fastapi.responses import StreamingResponse
 
 @app.get(
@@ -644,8 +678,11 @@ async def fit_id_get(
     except KeyError:
         raise HTTPException(status_code=404, detail="Job not found")
 
+#    async for js in _ndjson_streamer(runner.stream(begin, end)):
+#        print(js, end='', flush=True)
+
     # stream back the result
-    return StreamingResponse(_json_streamer(runner.stream(begin, end)))
+    return StreamingResponse(_ndjson_streamer(runner.stream(begin, end)))
 
 
 ########################################################
@@ -686,4 +723,4 @@ if __name__ == "__main__":
     in_docker = os.path.exists('/.dockerenv')
     host = "0.0.0.0" if in_docker else "127.0.0.1"
 
-    uvicorn.run(app, host=host, port=5000, log_level="info", forwarded_allow_ips='*')
+    uvicorn.run(rootapp, host=host, port=5000, log_level="info", forwarded_allow_ips='*')
