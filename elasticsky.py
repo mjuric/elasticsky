@@ -429,7 +429,7 @@ class FitRunner:
 #                print("stream: out of wait --- [2]")
 
 # See http://ndjson.org/
-import ujson as json
+import json as json
 async def _ndjson_streamer(stream):
     async for result in stream:
         yield json.dumps(result) + "\n"
@@ -438,7 +438,7 @@ async def main():
     ray.init(address='auto')
 
     runner = FitRunner("mini.psv")
-    runner.start(chunk_size=2)
+    runner.start(chunk_size=10)
 
     print(await runner.status(), file=sys.stderr)
 
@@ -586,7 +586,7 @@ async def fit_post(
         # start a new fit, if it's not already in batches
         if id not in batches:
             runner = FitRunner(fn)
-            runner.start(chunk_size=2, ntracklets=ntracklets)
+            runner.start(chunk_size=10, ntracklets=ntracklets)
 
             batches[id] = runner
 

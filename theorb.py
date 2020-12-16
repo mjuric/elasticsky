@@ -6,6 +6,7 @@ from requests.auth import HTTPBasicAuth
 from tqdm import tqdm
 
 url = "http://127.0.0.1:5000/api/v1"
+url = "https://asgard.dirac.dev/api/v1"
 auth=None
 
 class fit:
@@ -93,7 +94,13 @@ if __name__ == "__main__":
     theorb.login('dirac', 'tribbles')
 
     # start the fit and stream back the results
-    with theorb.fit("mini.psv") as f:
+    with theorb.fit("input.psv") as f:
         for result in tqdm(f):
-            #print(result["name"], result["state_vect"])
+            print(result["name"], result['findorb']['returncode'], end='')
+            if "state_vect" in result:
+                print('', result["state_vect"])
+            else:
+                with open("error.log", "a") as fp:
+                    fp.write(json.dumps(result))
+                    fp.write("\n")
             pass
