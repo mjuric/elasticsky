@@ -5,7 +5,7 @@ import ujson as json
 from requests.auth import HTTPBasicAuth
 from tqdm import tqdm
 
-url = "http://127.0.0.1:5000"
+url = "http://127.0.0.1:5000/api/v1"
 auth=None
 
 class fit:
@@ -28,14 +28,6 @@ class fit:
 
         return r.json()
 
-    def result(self, begin=None, end=None):
-        with requests.get(f"{self._url}/result", auth=auth, stream=True) as r:
-            r.raise_for_status()
-
-            # unserialize
-            for line in r.iter_lines():
-                yield json.loads(line)
-
     def __len__(self):
         if self._len is None:
             status = self.status()
@@ -43,15 +35,40 @@ class fit:
 
         return self._len
 
+    class ResultIterable():
+        def __init__(self, job, begin=None, end=None):
+            qp = {}
+            if begin is not None: qp['begin'] = begin
+            if end   is not None: qp['end']   = end
+
+            self.r = requests.get(f"{job._url}/result", auth=auth, stream=True, params=qp)
+            self.r.raise_for_status()
+
+            self.it = self.r.iter_lines()
+
+            # calculate result length
+            if end is None:
+                end = len(job)
+            if begin is None: begin = 0
+            self._len = end - begin
+
+        def __del__(self):
+            self.r.close()
+
+        def __len__(self):
+            return self._len
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return json.loads(next(self.it))
+
     def __iter__(self):
-        it = self.result()
+        return self.ResultIterable(self)
 
-        # hack a len() method
-#        def len(it_self):
-#            return self.len()
-#        it.__len__ = len
-
-        return it
+    def result(self, begin=None, end=None):
+        return self.ResultIterable(self, begin, end)
 
     # context manager protocol
     def __enter__(self):
@@ -76,8 +93,7 @@ if __name__ == "__main__":
     theorb.login('dirac', 'tribbles')
 
     # start the fit and stream back the results
-    with theorb.fit("medium.psv") as f:
-        print(f"len={len(f)}")
-        for result in tqdm(f.result(), total=len(f)):
+    with theorb.fit("mini.psv") as f:
+        for result in tqdm(f):
             #print(result["name"], result["state_vect"])
             pass
