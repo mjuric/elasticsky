@@ -327,19 +327,26 @@ class FitRunner:
         self.result = []
         self.total = min(len(self.df), ntracklets)
 
-    def collect(self, num_returns=None, timeout=0):
+    async def collect(self, num_returns=None, timeout=0):
         if num_returns == None:
             num_returns = len(self.tasks)
 
+        if len(self.tasks) == 0:
+            return 0
+
         # collect the results that have finished
-        done, tasks = ray.wait(self.tasks, num_returns=num_returns, timeout=timeout)
-        
-        chunked_results = ray.get(done)
+#        done, tasks = ray.wait(self.tasks, num_returns=num_returns, timeout=timeout)
+#        chunked_results = ray.get(done)
+        import asyncio
+        done, tasks = await asyncio.wait(self.tasks, return_when=asyncio.FIRST_COMPLETED, timeout=timeout)
+        chunked_results = [ task.result() for task in done ]
+
         results = [result for chunk in chunked_results for result in chunk]
         
         self.result += results
         self.tasks = tasks
 
+        print("len(result)=", len(self.result))
         return len(results)
 
 ###############################################
@@ -371,7 +378,7 @@ tags_metadata = [
 ]
 
 app = FastAPI(
-    root_path="/api/v1",
+#    root_path="/api/v1",
     title = "Orbit Fitter Service",
     description = "Scalable service for Solar System orbit fitting",
     version="0.0.1",
@@ -462,7 +469,7 @@ async def fit_post(
         fn = f"{tmpdir}/input.psv"
         with open(fn, 'wb') as fp:
             fp.write(ades)
-
+            
         # generate the ID, as hash of the file
         import hashlib
         content = open(fn).read() + f"\nntracklets={ntracklets}"
@@ -512,7 +519,7 @@ async def fit_id_get(
     except KeyError:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    runner.collect()
+    await runner.collect()
 
     trk_done = len(runner.result)
     trk_pending = runner.total - trk_done
@@ -530,6 +537,8 @@ async def fit_id_get(
         eta = eta
     )
 
+from fastapi.responses import StreamingResponse
+
 @app.get(
     "/fit/{id:str}/result",
     summary="Get job status.",
@@ -540,6 +549,8 @@ async def fit_id_get(
 async def fit_id_get(
     request: Request,
     id: str,
+    begin: Optional[int] = None,
+    end:   Optional[int] = None,
     credentials: HTTPBasicCredentials = Depends(authenticate)
 ):
     try:
@@ -547,8 +558,25 @@ async def fit_id_get(
     except KeyError:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    runner.collect()
-    return runner.result
+    # return what the user asked for:
+    # begin: starting point -- we may need to wait on collect if
+    #        we haven't reached it yet
+    if begin is None:
+        begin = 0
+    while begin < len(runner.result) and len(runner.tasks):
+        await runner.collect(num_returns=1, timeout=None)
+
+    # end:
+    #   a) if a number, return result[begin:end]
+    #   b) if None, return until the batch is finished
+    if end is None:
+        await runner.collect(timeout=None)
+    else:
+        while len(runner.result) < end and len(runner.tasks):
+            await runner.collect(num_returns=1, timeout=None)
+
+#    print(begin, end, len(runner.result))
+    return runner.result[begin:end]
 
 ########################################################
 
