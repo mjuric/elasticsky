@@ -1,6 +1,8 @@
 FROM rayproject/ray:latest-cpu
 MAINTAINER Mario Juric
 
+USER root
+
 # Useful utilities
 RUN apt-get update \
 	&& apt-get install joe jq -y
@@ -17,6 +19,10 @@ RUN mkdir ~/software && cd ~/software \
 	&& /bin/bash INSTALL.sh -d .. -u \
 	&& cp -a ~/bin/* /usr/local/bin \
 	&& rm -r ~/software
+
+RUN mkdir /data && chown ray.users /data
+
+USER ray
 
 # elasticsky dependencies
 RUN conda install -c defaults -c conda-forge tabulate uvicorn fastapi python-multipart passlib aiofiles --yes \

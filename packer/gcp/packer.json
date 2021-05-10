@@ -1,0 +1,26 @@
+{
+  "variables": {
+    "project_id":     "{{env `PROJECT_ID`}}",
+    "image_name":     "{{env `IMAGE_NAME`}}",
+    "zone":           "{{env `ZONE`}}"
+  },
+  "builders": [
+    {
+      "type": "googlecompute",
+      "image_name": "{{user `image_name`}}",
+      "project_id": "{{user `project_id`}}",
+      "zone":       "{{user `zone`}}",
+      "source_image_family": "ubuntu-minimal-2104",
+      "ssh_username": "ubuntu",
+      "disk_type": "pd-ssd",
+      "disk_size": 10,
+      "machine_type": "n2-standard-2"
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "script": "./provision.sh"
+    }
+  ]
+}

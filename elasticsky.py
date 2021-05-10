@@ -471,7 +471,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Path, Query, Request, Response, File, UploadFile, Form, HTTPException, Depends, status
 from starlette.responses import RedirectResponse
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, HttpUrl, AnyHttpUrl, Field
 from typing import List, Optional, Any
 from datetime import datetime, timedelta
 
@@ -533,7 +533,7 @@ batches = {}
 
 class Job(BaseModel):
     id: str = Field(..., max_length=40, title='Job identifier', description='An idenfitier uniquely identifying this job')
-    url: HttpUrl = Field(..., title='Job resource URL', description='Resource URL to check for job status and fetch results')
+    url: AnyHttpUrl = Field(..., title='Job resource URL', description='Resource URL to check for job status and fetch results')
 
 @app.get(
     "/fit",
@@ -594,6 +594,7 @@ async def fit_post(
 
     # compute the resource URL
     url = request.url_for("fit_id_get", id=id)
+    print(f"URL = {url}")
 
     return { 'id': id, 'url': url }
 
@@ -718,9 +719,12 @@ import os
 import uvicorn
 
 if __name__ == "__main__":
-    # bind to 0.0.0.0 if running in docker (127.0.0.1 isn't port-mapped on
-    # the Mac)
-    in_docker = os.path.exists('/.dockerenv')
-    host = "0.0.0.0" if in_docker else "127.0.0.1"
+    import argparse
+    parser = argparse.ArgumentParser(description='Orbit fitting REST service')
+    parser.add_argument('--host', type=str, default='127.0.0.1', help='IP of the interface to bind to.')
+    parser.add_argument('--port', type=int, default=5000, help='port to bind to.')
+#    parser.add_argument('--htpasswd', type=str, default=None, help='Apache htpasswd to use for authentication.')
 
-    uvicorn.run(rootapp, host=host, port=5000, log_level="info", forwarded_allow_ips='*')
+    args = parser.parse_args()
+
+    uvicorn.run(rootapp, host=args.host, port=args.port, log_level="info", forwarded_allow_ips='*')
