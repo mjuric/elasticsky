@@ -5,6 +5,7 @@ sudo apt-get update
 sudo apt-get install git joe jq rsync telnet screen -y
 
 #
+# Head Node:
 # Hack to add authentication and dashboard proxying
 #
 
@@ -63,6 +64,20 @@ sudo tee /var/www/htpasswd > /dev/null <<-'EOF'
 EOF
 sudo systemctl restart nginx
 
+#
+# Dev quality-of-life:
+# Mount shared NFS filesystem to /adam
+#
+sudo apt-get install nfs-common -y
+mkdir /adam
+echo "nfs.api.b612.ai:/adam	/adam	nfs	defaults	0 0" >> /etc/fstab
+mount -a
+
+#
+# Dev quality-of-life:
+# Mirror the users from /
+# FIXME: there's got to be a better way to do this w. Google's tools (OS Login?)
+#
 
 #
 # Build findorb
