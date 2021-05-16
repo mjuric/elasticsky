@@ -1,5 +1,5 @@
 # An unique identifier for the head node and workers of this cluster.
-cluster_name: elasticsky
+cluster_name: mjuric
 
 # The maximum number of workers nodes to launch in addition to the head
 # node.
@@ -12,7 +12,7 @@ max_workers: 30
 upscaling_speed: 1.0
 
 # If a node is idle for this many minutes, it will be removed.
-idle_timeout_minutes: 2
+idle_timeout_minutes: 3
 
 # Cloud-provider specific configuration.
 provider:
@@ -23,7 +23,7 @@ provider:
 
 # How Ray will authenticate with newly launched nodes.
 auth:
-    ssh_user: ubuntu
+    ssh_user: mjuric
 # By default Ray creates a new private keypair, but you can also use your own.
 # If you do so, make sure to also set "KeyName" in the head and worker node
 # configurations below. This requires that you have added the key into the
@@ -48,7 +48,7 @@ available_node_types:
         # For more documentation on available fields, see:
         # https://cloud.google.com/compute/docs/reference/rest/v1/instances/insert
         node_config:
-            machineType: n2-standard-2
+            machineType: e2-standard-2
             disks:
               - boot: true
                 autoDelete: true
@@ -56,7 +56,7 @@ available_node_types:
                 initializeParams:
                   diskSizeGb: 10
                   # See https://cloud.google.com/compute/docs/images for more images
-                  sourceImage: projects/moeyens-thor-dev/global/images/elasticsky-fastapi # custom image built with packer
+                  sourceImage: projects/moeyens-thor-dev/global/images/ray-thin # custom image built with packer
 
             # Additional options can be found in in the compute docs at
             # https://cloud.google.com/compute/docs/reference/rest/v1/instances/insert
@@ -91,7 +91,7 @@ available_node_types:
                 initializeParams:
                   diskSizeGb: 10
                   # See https://cloud.google.com/compute/docs/images for more images
-                  sourceImage: projects/moeyens-thor-dev/global/images/elasticsky-fastapi # custom image built with packer
+                  sourceImage: projects/moeyens-thor-dev/global/images/ray-thin # custom image built with packer
             # Run workers on preemtible instance by default.
             # Comment this out to use on-demand.
             scheduling:
@@ -108,8 +108,8 @@ worker_default_node_type: ray_worker_cpu8
 # Files or directories to copy to the head and worker nodes. The format is a
 # dictionary from REMOTE_PATH: LOCAL_PATH, e.g.
 file_mounts: {
-    "/home/ubuntu/tv": "tv",
-    "/home/ubuntu/environ.dat": "environ.dat"
+##    "/home/ubuntu/tv": "tv",
+##    "/home/ubuntu/environ.dat": "environ.dat"
 #    "/path2/on/remote/machine": "/path2/on/local/machine",
 }
 
@@ -148,10 +148,8 @@ setup_commands: []
     # that has the "nightly" (e.g. "rayproject/ray-ml:nightly-gpu") or uncomment the following line:
     # - pip install -U "ray[default] @ https://s3-us-west-2.amazonaws.com/ray-wheels/latest/ray-2.0.0.dev0-cp37-cp37m-manylinux2014_x86_64.whl"
 
-
 # Custom commands that will be run on the head node after common setup.
-head_setup_commands:
-  - ls -l ~
+head_setup_commands: []
 
 # Custom commands that will be run on worker nodes after common setup.
 worker_setup_commands: []
@@ -160,6 +158,7 @@ worker_setup_commands: []
 head_start_ray_commands:
     - ray stop
     - >-
+      cd ~/elasticsky;
       ulimit -n 65536;
       ray start
       --head
@@ -171,6 +170,7 @@ head_start_ray_commands:
 worker_start_ray_commands:
     - ray stop
     - >-
+      cd ~/elasticsky;
       ulimit -n 65536;
       ray start
       --address=$RAY_HEAD_IP:6379
