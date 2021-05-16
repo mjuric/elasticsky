@@ -1,5 +1,5 @@
 # An unique identifier for the head node and workers of this cluster.
-cluster_name: mjuric
+cluster_name: {{ user }}
 
 # The maximum number of workers nodes to launch in addition to the head
 # node.
@@ -23,7 +23,7 @@ provider:
 
 # How Ray will authenticate with newly launched nodes.
 auth:
-    ssh_user: mjuric
+    ssh_user: {{ user }}
 # By default Ray creates a new private keypair, but you can also use your own.
 # If you do so, make sure to also set "KeyName" in the head and worker node
 # configurations below. This requires that you have added the key into the
@@ -57,7 +57,14 @@ available_node_types:
                   diskSizeGb: 10
                   # See https://cloud.google.com/compute/docs/images for more images
                   sourceImage: projects/moeyens-thor-dev/global/images/ray-thin # custom image built with packer
-
+            networkInterfaces:
+              # Assigned static internal and external addresses
+              - accessConfigs:
+                - type: ONE_TO_ONE_NAT
+                  name: "External NAT"
+                  natIP: {{ externalIP }}
+                networkIP: {{ internalIP }}
+  
             # Additional options can be found in in the compute docs at
             # https://cloud.google.com/compute/docs/reference/rest/v1/instances/insert
 
@@ -158,7 +165,7 @@ worker_setup_commands: []
 head_start_ray_commands:
     - ray stop
     - >-
-      cd ~/elasticsky;
+      cd {{ workdir }};
       ulimit -n 65536;
       ray start
       --head
@@ -170,7 +177,7 @@ head_start_ray_commands:
 worker_start_ray_commands:
     - ray stop
     - >-
-      cd ~/elasticsky;
+      cd {{ workdir }};
       ulimit -n 65536;
       ray start
       --address=$RAY_HEAD_IP:6379
