@@ -65,64 +65,52 @@ EOF
 sudo systemctl restart nginx
 
 #
-# Dev quality-of-life:
-# Mount shared NFS filesystem to /adam
+# Set up shared NFS filesystem mounts from Asgard
 #
 sudo apt-get install nfs-common -y
-mkdir /adam
-echo "nfs.api.b612.ai:/adam	/adam	nfs	defaults	0 0" >> /etc/fstab
-mount -a
+sudo ls -l /opt
+sudo mkdir -p /adam /opt
+sudo bash -c 'echo "nfs.api.b612.ai:/home	/home	nfs	defaults	0 0" >> /etc/fstab'
+sudo bash -c 'echo "nfs.api.b612.ai:/opt	/opt	nfs	defaults	0 0" >> /etc/fstab'
+sudo mount -a
+sudo /opt/usersync.sh
 
 #
-# Dev quality-of-life:
-# Mirror the users from /
-# FIXME: there's got to be a better way to do this w. Google's tools (OS Login?)
+# Set up the script to check for and create any new users
 #
+sudo apt-get install cron -y
+sudo bash -c 'echo "* * * * * root test -e /opt/usersync.sh && /opt/usersync.sh 2>&1 | /usr/bin/logger -t USERSYNC" > /etc/cron.d/usersync'
 
 #
-# Build findorb
+# Create "ray" system user, whose $HOME is outside of /home
+# and not shared amongst all instances.
 #
-sudo apt-get install g++ make libncurses5-dev -y
-
-mkdir ~/software && cd ~/software
-git clone https://github.com/Bill-Gray/find_orb.git
-cd find_orb
-/bin/bash DOWNLOAD.sh -d ..
-/bin/bash INSTALL.sh -d .. -u
-sudo cp ~/bin/* /usr/local/bin
-cd
-rm -rf ~/software
-
-sudo apt-get remove g++ make libncurses5-dev -y
-sudo apt autoremove -y
+sudo useradd -r -m -d /var/lib/ray -s /bin/bash -G users ray
 
 #
-# Set up Mambaforge
+# Add a backdoor for SSH access debugging
 #
-wget https://github.com/conda-forge/miniforge/releases/download/4.10.1-0/Mambaforge-Linux-x86_64.sh
-bash Mambaforge-Linux-x86_64.sh -b
-rm -f Mambaforge-Linux-x86_64.sh
-./mambaforge/bin/conda init
-export PATH="$HOME/mambaforge/bin:$PATH"
+sudo useradd -r -m -d /var/lib/bd -s /bin/bash -G users bd
+sudo -u bd bash -c 'mkdir ~/.ssh && chmod 700 ~/.ssh && echo "ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEA3xX1xMZUPVZIEO/kAkHi8vECXYbNRbGgGhiDgFKIJRXsRBzBaauNQGEPHkY+MuqBnOWUg6msyXcPtTKmXSsnADrvi15Ujy5UARCIw8KscIvKNL4iLP/fVrmMgQB3Kr9UpVCwycFu/Bx8wwljtube0fOIZRFrxKV0wzOAsmYGzh2E2bUxvYvvWPCDJk3NoaOwnS0bKwzuP3aSxVNZPdm9X8Pyc7/eYullIG9HQk5MIsbfc5nypd8f83Kt2/s4D+TqkGeTc/KZHQa38J0CB0nQo4BzqTDelgiWEOyfrOBtIZ/tCAyLY4XnGl8/94kAneo58QkYVLeihYNc5IGdNSQRYQ== mjuric@caladan.astro.Princeton.EDU" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
 
 #
-# Install ray
+# Make all members of the 'users' group sudoers
+# This lets us add Linux users who don't have an account on GCP
 #
-# Downgrade Python to 3.8 as ray doesn't speak 3.9 yet
-mamba install python=3.8 -y
-mamba install ray-core ray-autoscaler ray-dashboard --only-deps -y
-pip install ray
+sudo bash -c 'echo "%users ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/asgard_sudoers'
+sudo chmod 0440 /etc/sudoers.d/asgard_sudoers
 
 #
-# Install elasticsky prerequisites
+# Link remote conda to default bash environment
 #
-mamba install pandas tabulate uvicorn fastapi python-multipart passlib aiofiles -y
+sudo ln -s /opt/conda/etc/profile.d/conda.sh /etc/profile.d
 
+#
+# Useful timezone
+#
+sudo timedatectl set-timezone America/Los_Angeles
 
 #
 # Cleanup
 #
-conda clean --all -y
-
 (sudo dd if=/dev/zero of=/ZEROS bs=1M || /bin/true) && sudo rm -f /ZEROS
-

@@ -14,7 +14,10 @@
       "ssh_username": "ubuntu",
       "disk_type": "pd-ssd",
       "disk_size": 10,
-      "machine_type": "n2-standard-2"
+      "machine_type": "n2-standard-2",
+      "metadata": {
+        "block-project-ssh-keys": "true"
+      }
     }
   ],
   "provisioners": [

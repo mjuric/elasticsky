@@ -1,6 +1,6 @@
 PROJECT_ID?=moeyens-thor-dev
 ZONE?=us-west1-a
-IMAGE_NAME?=elasticsky-fastapi
+IMAGE_NAME?=ray-thin
 
 validate:
 	@ IMAGE_NAME=$(IMAGE_NAME) ZONE=$(ZONE) PROJECT_ID=$(PROJECT_ID) packer validate packer.json
